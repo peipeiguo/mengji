@@ -171,12 +171,12 @@ if __name__ == "__main__":
     
     # 读取配置文件，设置日志信息
     log_file = get_config("General", "log-file")
-    if log_file is None:
+    if log_file is None or len(log_file) == 0:
         log_file = 'mengji.log'
 
     level = get_config("General", "log-level")
-    if level is None:
-        level = 'warning'
+    if level is None or len(level) == 0:
+        level = 'info'
     logging.basicConfig(filename = log_file, format = '%(asctime)s %(filename)s:%(lineno)-3d %(levelname)-7s: %(message)s', level = LOG_LEVEL[level])
     logging.info('Starting Mengji %s, current working directory is "%s".', VERSION, os.getcwd())
 
@@ -189,12 +189,12 @@ if __name__ == "__main__":
     # 读取配置文件，设置汇总表单路径
     form_path = get_config("Destination", "account-form-path")
     sheet_name = get_config("Destination", "sheet-name")
-    if form_path is None:
+    if form_path is None or len(form_path) == 0:
         logging.error('No account form path was specified in the configuration file.')
         logging.info('Exit Mengji %s.', VERSION)
         sys.exit()
 
-    if sheet_name is None:
+    if sheet_name is None or len(sheet_name) == 0:
         logging.error('No sheet name was specified in the configuration file.')
         logging.info('Exit Mengji %s.', VERSION)
         sys.exit()
