@@ -1,17 +1,34 @@
 #!/usr/bin/python
 # -*- coding: UTF-8 -*-
 import os
+import sys
 import re
 import logging
 import docx
 import win32com.client as win32
+import configparser
 
 from docx import Document
 from openpyxl import load_workbook
 
+VERSION = "1.0"
+LOG_LEVEL = {'debug': logging.DEBUG, 'info': logging.INFO, 'warning': logging.WARNING, 'error': logging.error}
+
+def get_config(section, key):
+    conf = configparser.ConfigParser()
+    path = os.path.dirname(os.path.abspath(__file__)) + '/mengji.cfg'
+    if not os.path.exists(path):
+        logging.info('Config file "%s" does not exist.', path)
+    conf.read(path, encoding='utf-8')
+    try:
+        value = conf.get(section, key)
+    except configparser.NoOptionError:
+        value = None
+    return value
+
 # 将 .doc 文件转成 .docx 
 def doc_to_docx(path):
-    logging.info('Converting "%s" to docx format...', path)
+    logging.info('Converting file "%s" to docx format...', path)
     word = win32.Dispatch('Word.Application') # 打开word应用程序
     word.Visible = 0        # 后台运行, 不显示
     word.DisplayAlerts = 0  # 不警告
@@ -28,11 +45,12 @@ def get_contract_files_in_directory(directory):
     logging.info('Getting contract files in "%s"...', directory)
     contract_files = []
     for file in os.listdir(directory):
-        if os.path.isfile(file) and os.path.splitext(file)[1] == ".doc" and file.startswith("dp"):
-            logging.info(file)
-            contract_files.append(os.path.join(directory, file))
+        path = os.path.join(directory, file)
+        ext = os.path.splitext(file)[1]
+        if os.path.isfile(path) and (ext == ".doc" or ext == ".docx") and file.startswith("dp"):
+            contract_files.append(path)
 
-    logging.info('Found %u files.', len(contract_files))
+    logging.info('Total found %u contract files: %s', len(contract_files), contract_files)
     return contract_files
 
 def read_contract_data_from_word(file_path, n):
@@ -44,8 +62,11 @@ def read_contract_data_from_word(file_path, n):
     contract_no = re.sub(r'（[^）]+?）', '', file_name) # 合同号，提取自文件名
     customer = re.findall(r"（(.+?)）", file_name)[0]  # 客户名称，提取自文件名
 
-    file_path = doc_to_docx(file_path)
-    logging.info('Reading contract data from "%s"', file_path)
+    ext = os.path.splitext(file_path)[1]
+    if ext == ".doc":
+        file_path = doc_to_docx(file_path)
+    
+    logging.info('Reading contract data from file "%s"', file_path)
     doc = Document(file_path)
     table = doc.tables[n]
     orders = []  # 订单内容，提取自文档里表格里的数据
@@ -61,7 +82,8 @@ def read_contract_data_from_word(file_path, n):
         record['total_price'] = table.cell(i, 6).text.strip()   # 总价
         orders.append(record)
 
-    os.remove(file_path)
+    if ext == ".doc":
+        os.remove(file_path)
     return contract_no, customer, orders
 
 def record_exists_in_excel(work_sheet, contract_no):
@@ -78,13 +100,16 @@ def append_contract_data_to_excel(file_path, sheet_name, contract_no, customer, 
     '''
     wb = load_workbook(file_path)
     ws = wb[sheet_name]
-    logging.info('表格：%s，工作表有：%s', file_path, wb.sheetnames) # 打印所有工作表的名称
-
-    if record_exists_in_excel(ws, contract_no):
-        logging.info('合同号"%s"的数据已经存在，请勿重复汇总', contract_no)
+    #logging.info('表格：%s，工作表有：%s', file_path, wb.sheetnames) # 打印所有工作表的名称
+    if sheet_name not in wb.sheetnames:
+        logging.error('Sheet "%s" does not exists in file "%s".', sheet_name, file_path)
         return
 
-    logging.info('开始追加数据到工作表"%s"，总行数：%u，总列数：%u', sheet_name, ws.max_row, ws.max_column)
+    if record_exists_in_excel(ws, contract_no):
+        logging.error('Data of contract No. "%s" already exists, please do not append data repeatedly.', contract_no)
+        return
+
+    logging.info('Start appending data to the worksheet "%s", total rows: %u, total columns: %u', sheet_name, ws.max_row, ws.max_column)
     for i in range(len(orders)):
         rec = dict()
         rec['C'] = contract_no      # 订单号（合同号）
@@ -95,9 +120,10 @@ def append_contract_data_to_excel(file_path, sheet_name, contract_no, customer, 
         rec['L'] = orders[i]['unit_price']   # 单价
         rec['M'] = orders[i]['total_price']  # 结算金额
         ws.append(rec)
+        logging.info('Successfully appended one record: %s', rec)
 
     wb.save(file_path)
-    logging.info('完成追加数据到工作表"%s"，总行数：%u，总列数：%u', sheet_name, ws.max_row, ws.max_column)
+    logging.info('Complete appending data to worksheet "%s"，total rows: %u, total columns: %u', sheet_name, ws.max_row, ws.max_column)
     wb.close()
     return
 
@@ -105,19 +131,20 @@ def summarize_contracts_to_account_form(contracts, account_form, sheet_name):
     '''Summarize all contract data to the specify account form
     '''
     if not len(contracts):
-        logging.error('合同文件列表为空，请检查合同文件的存放位置是否正确。')
+        logging.error('No contract documents, please check the path of contract documents.')
         return
 
     if not os.path.exists(account_form):
-        logging.error('指定的账目汇总表单文件（"%s"）不存在。', account_form)
+        logging.error('Account summary form file does not exist: "%s".', account_form)
         return
 
     for i in range(len(contracts)):
+        logging.info('Starting to process %u/%u: contract: %s', i + 1, len(contracts), contracts[i])
         # 从合同文件中解析订单数据
         contract_no, customer, orders = read_contract_data_from_word(contracts[i], 0)
-        logging.info('%u/%u: 合同号：%s，客户名称：%s', i + 1, len(contracts), contract_no, customer)
+        logging.info('Contract no: %s, customer: %s', contract_no, customer)
         for i in range(len(orders)):
-            logging.info('订单内容：%s, 开票数量：%s，单位：%s，单价：%s，总价：%s', 
+            logging.info('- Order content：%s, quantity: %s, unit: %s, unit price: %s, total price: %s', 
                 orders[i]['subject'] + orders[i]['spec'],
                 orders[i]['quantity'],
                 orders[i]['unit'],
@@ -129,16 +156,39 @@ def summarize_contracts_to_account_form(contracts, account_form, sheet_name):
     return
 
 if __name__ == "__main__":
-    WORKING_DIR = os.getcwd()   # working directory
-    ACCOUNT_FORM = "A1账目-大浦 (20-6-13).xlsx"
-    SHEET_NAME = '订单2020'
+    # 读取配置文件，设置日志信息
+    log_file = get_config("General", "log-file")
+    level = get_config("General", "log-level")
+    if level is None:
+        level = 'warning'
+    logging.basicConfig(filename = log_file, format = '%(asctime)s %(filename)s:%(lineno)-3d %(levelname)s: %(message)s', level = LOG_LEVEL[level])
+    logging.info('Starting Mengji %s, current working directory is "%s".', VERSION, os.getcwd())
 
-    logging.basicConfig(format = '%(asctime)s %(levelname)s: %(message)s', level = logging.DEBUG)
+    # 读取配置文件，设置合同目录
+    doc_path = get_config("Source", "contract-doc-path")
+    if not os.path.exists(doc_path):
+        logging.warning('Contract document path does not exsit: "%s", use current working directory instead.', doc_path)
+        doc_path = os.getcwd()
+
+    # 读取配置文件，设置汇总表单路径
+    form_path = get_config("Destination", "account-form-path")
+    sheet_name = get_config("Destination", "sheet-name")
+    if form_path is None:
+        logging.error('No account form path was specified in the configuration file.')
+        logging.info('Exit Mengji %s.', VERSION)
+        sys.exit()
+
+    if sheet_name is None:
+        logging.error('No sheet name was specified in the configuration file.')
+        logging.info('Exit Mengji %s.', VERSION)
+        sys.exit()
 
     # 从指定目录（默认：当前脚本文件所在目录）下获取合同文件列表
-    contracts = get_contract_files_in_directory(WORKING_DIR)
+    contracts = get_contract_files_in_directory(doc_path)
 
     # 将合同文件中的订单数据汇总到指定的账单表格里（追加方式）
-    summarize_contracts_to_account_form(contracts, ACCOUNT_FORM, SHEET_NAME)
-
+    logging.info('Destination info: sheet "%s" of account form "%s"', sheet_name, form_path)
+    summarize_contracts_to_account_form(contracts, form_path, sheet_name)
+    logging.info('Exit Mengji %s.', VERSION)
+    sys.exit()
 
