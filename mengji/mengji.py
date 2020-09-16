@@ -2,6 +2,7 @@
 # -*- coding: UTF-8 -*-
 import os
 import sys
+import datetime
 import re
 import logging
 import docx
@@ -15,14 +16,16 @@ VERSION = "1.0"
 LOG_LEVEL = {'debug': logging.DEBUG, 'info': logging.INFO, 'warning': logging.WARNING, 'error': logging.error}
 
 def get_config(section, key):
-    conf = configparser.ConfigParser()
     path = os.path.dirname(os.path.abspath(__file__)) + '/mengji.cfg'
     if not os.path.exists(path):
-        logging.info('Config file "%s" does not exist.', path)
+        logging.error('Config file does not exist: "%s".', path)
+        return None
+
+    conf = configparser.ConfigParser()
     conf.read(path, encoding='utf-8')
     try:
         value = conf.get(section, key)
-    except configparser.NoOptionError:
+    except (configparser.NoSectionError, configparser.NoOptionError):
         value = None
     return value
 
@@ -115,15 +118,20 @@ def append_contract_data_to_excel(file_path, sheet_name, contract_no, customer, 
         rec['C'] = contract_no      # 订单号（合同号）
         rec['D'] = customer         # 客户名称
         rec['E'] = orders[i]['subject'] + orders[i]['spec']   # 订单内容：标的名称+规格型号
-        rec['J'] = orders[i]['quantity']     # 开票数量
+        rec['J'] = float(orders[i]['quantity'])     # 开票数量
         rec['K'] = orders[i]['unit']         # 单位
-        rec['L'] = orders[i]['unit_price']   # 单价
-        rec['M'] = orders[i]['total_price']  # 结算金额
+        rec['L'] = float(orders[i]['unit_price'])   # 单价
+        rec['M'] = float(orders[i]['total_price'])  # 结算金额
+        rec['O'] = datetime.datetime.now().strftime("%Y/%m/%d") # 日期
         ws.append(rec)
         logging.info('Successfully appended one record: %s', rec)
 
-    wb.save(file_path)
-    logging.info('Complete appending data to worksheet "%s"，total rows: %u, total columns: %u', sheet_name, ws.max_row, ws.max_column)
+    try:
+        wb.save(file_path)
+    except PermissionError: 
+        logging.error('Can not save excel file, permission denied: "%s"', file_path)
+    else:
+        logging.info('Complete appending data to worksheet "%s"，total rows: %u, total columns: %u', sheet_name, ws.max_row, ws.max_column)
     wb.close()
     return
 
@@ -156,17 +164,25 @@ def summarize_contracts_to_account_form(contracts, account_form, sheet_name):
     return
 
 if __name__ == "__main__":
+    path = os.path.dirname(os.path.abspath(__file__)) + '\mengji.cfg'
+    if not os.path.exists(path):
+        print('ERROR: Config file does not exist: "%s".' % path)
+        sys.exit()
+    
     # 读取配置文件，设置日志信息
     log_file = get_config("General", "log-file")
+    if log_file is None:
+        log_file = 'mengji.log'
+
     level = get_config("General", "log-level")
     if level is None:
         level = 'warning'
-    logging.basicConfig(filename = log_file, format = '%(asctime)s %(filename)s:%(lineno)-3d %(levelname)s: %(message)s', level = LOG_LEVEL[level])
+    logging.basicConfig(filename = log_file, format = '%(asctime)s %(filename)s:%(lineno)-3d %(levelname)-7s: %(message)s', level = LOG_LEVEL[level])
     logging.info('Starting Mengji %s, current working directory is "%s".', VERSION, os.getcwd())
 
     # 读取配置文件，设置合同目录
     doc_path = get_config("Source", "contract-doc-path")
-    if not os.path.exists(doc_path):
+    if doc_path is None or not os.path.exists(doc_path):
         logging.warning('Contract document path does not exsit: "%s", use current working directory instead.', doc_path)
         doc_path = os.getcwd()
 
